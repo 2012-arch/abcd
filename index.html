@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Hide & Seek GPS</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <style>
+        body, html, #map { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+        .hud { pointer-events: none; z-index: 1000; }
+        .hud-btn { pointer-events: auto; }
+    </style>
+</head>
+<body class="bg-slate-900">
+    <div id="app" class="h-screen w-screen relative">
+        <!-- Lobby Screen -->
+        <div id="lobby" class="absolute inset-0 z-[2000] bg-slate-900 text-white flex flex-col items-center justify-center p-6 text-center">
+            <h1 class="text-4xl font-black mb-4 italic">HIDE & SEEK GPS</h1>
+            <p class="text-slate-400 mb-8">Choose your side to enter the arena</p>
+            <div class="grid grid-cols-1 gap-4 w-full max-w-xs">
+                <button onclick="startGame('Runner')" class="bg-blue-600 p-6 rounded-2xl text-2xl font-bold hover:bg-blue-500 transition-colors">🏃 I am a Runner</button>
+                <button onclick="startGame('Hunter')" class="bg-red-600 p-6 rounded-2xl text-2xl font-bold hover:bg-red-500 transition-colors">🎯 I am a Hunter</button>
+            </div>
+        </div>
+
+        <!-- Game Map -->
+        <div id="map"></div>
+
+        <!-- HUD -->
+        <div id="hud" class="hud absolute top-0 left-0 w-full h-full p-4 flex flex-col justify-between hidden">
+            <div class="bg-black/60 text-white p-4 rounded-lg w-fit">
+                <h1 id="game-status" class="text-xl font-bold uppercase">Game Active!</h1>
+                <p id="timer" class="text-2xl font-mono">00:00</p>
+            </div>
+            <div class="flex justify-center mb-8">
+                <button id="tag-btn" onclick="handleTag()" class="hud-btn hidden bg-red-600 text-white px-8 py-4 rounded-full font-bold text-xl shadow-lg active:scale-95 transition-transform">
+                    I GOT TAGGED 🏳️
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // CONFIGURATION - YOUR ACTUAL KEYS
+        const SUPABASE_URL = 'https://isnukqaxyzicjorpppbr.supabase.co';
+        const SUPABASE_KEY = 'sb_publishable_iwc7hxRIIZ3tWaozW_ntfg_cbt8nmp6';
+        const { createClient } = supabase;
+        const client = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        let userId = 'user_' + Math.random().toString(36).substr(2, 9);
+        let userRole = null;
+        let map, userMarker;
+        let players = {};
+
+        async function startGame(role) {
+            userRole = role;
+            document.getElementById('lobby').classList.add('hidden');
+            document.getElementById('hud').classList.remove('hidden');
+            if(role === 'Runner') document.getElementById('tag-btn').classList.remove('hidden');
+
+            initMap();
+            startTracking();
+            syncPlayers();
+        }
+
+        function initMap() {
+            map = L.map('map').setView([0, 0], 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            userMarker = L.marker([0, 0]).addTo(map).bindPopup("Me");
+        }
+
+        function startTracking() {
+            navigator.geolocation.watchPosition(async (pos) => {
+                const { latitude, longitude } = pos.coords;
+                map.setView([latitude, longitude]);
+                userMarker.setLatLng([latitude, longitude]);
+
+                await client.from('players').upsert({
+                    id: userId,
+                    role: userRole,
+                    lat: latitude,
+                    lng: longitude,
+                    updated_at: new Date().toISOString()
+                });
+            }, (err) => console.error(err), { enableHighAccuracy: true });
+        }
+
+        async function syncPlayers() {
+            client.channel('game_sync')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'players' }, payload => {
+                    updateMarkers(payload.new);
+                })
+                .subscribe();
+
+            const { data } = await client.from('players').select('*');
+            if (data) data.forEach(p => updateMarkers(p));
+        }
+
+        function updateMarkers(player) {
+            if (!player || player.id === userId) return;
+            if (userRole === 'Runner') return; // Runners can't see others
+
+            if (players[player.id]) {
+                players[player.id].setLatLng([player.lat, player.lng]);
+            } else {
+                players[player.id] = L.marker([player.lat, player.lng])
+                    .addTo(map)
+                    .bindPopup(player.role);
+            }
+        }
+
+        async function handleTag() {
+            await client.from('players').update({ status: 'tagged' }).eq('id', userId);
+            alert('You have been tagged! You are now out.');
+            if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+        }
+    </script>
+</body>
+</html>
